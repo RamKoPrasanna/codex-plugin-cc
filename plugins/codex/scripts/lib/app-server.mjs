@@ -30,7 +30,7 @@ const DEFAULT_CLIENT_INFO = {
 };
 
 /** @type {InitializeCapabilities} */
-const DEFAULT_CAPABILITIES = {
+export const DEFAULT_CAPABILITIES = {
   experimentalApi: false,
   requestAttestation: false,
   optOutNotificationMethods: [

@@ -119,9 +119,14 @@ Examples:
 /codex:adversarial-review
 /codex:adversarial-review --base main challenge whether this was the right caching and retry design
 /codex:adversarial-review --background look for race conditions and question the chosen approach
+/codex:adversarial-review --daybreak --base main focus on authz bypass and injection paths
 ```
 
 This command is read-only. It does not fix code.
+
+#### Daybreak
+
+`--daybreak` runs the turn under OpenAI's Daybreak Blue cyber access program, for defensive security reviews. It works on `/codex:adversarial-review` and `/codex:rescue`; `/codex:review` rejects it because the native review endpoint has no access-program field. Without `--model` it uses `gpt-6-sol`. Before starting, the plugin checks the model catalog and fails fast with the list of Daybreak-capable models if the chosen one is not among them. Your account must already be enrolled; the flag requests the program but does not grant it.
 
 ### `/codex:rescue`
 
@@ -145,8 +150,8 @@ Examples:
 /codex:rescue investigate why the tests started failing
 /codex:rescue fix the failing test with the smallest safe patch
 /codex:rescue --resume apply the top fix from the last run
-/codex:rescue --model gpt-5.4-mini --effort medium investigate the flaky integration test
-/codex:rescue --model spark fix the issue quickly
+/codex:rescue --model gpt-6-astra --effort high investigate the flaky integration test
+/codex:rescue --model luna fix the issue quickly
 /codex:rescue --background investigate the regression
 ```
 
@@ -159,7 +164,7 @@ Ask Codex to redesign the database connection to be more resilient.
 **Notes:**
 
 - if you do not pass `--model` or `--effort`, Codex chooses its own defaults.
-- if you say `spark`, the plugin maps that to `gpt-5.3-codex-spark`
+- if you say `luna` (or the legacy `spark`), the plugin maps that to `gpt-6-luna`
 - follow-up rescue requests can continue the latest Codex task in the repo
 
 ### `/codex:transfer`
@@ -270,10 +275,10 @@ The Codex plugin wraps the [Codex app server](https://developers.openai.com/code
 
 ### Common Configurations
 
-If you want to change the default reasoning effort or the default model that gets used by the plugin, you can define that inside your user-level or project-level `config.toml`. For example to always use `gpt-5.4-mini` on `high` for a specific project you can add the following to a `.codex/config.toml` file at the root of the directory you started Claude in:
+If you want to change the default reasoning effort or the default model that gets used by the plugin, you can define that inside your user-level or project-level `config.toml`. For example to always use `gpt-6-luna` on `high` for a specific project you can add the following to a `.codex/config.toml` file at the root of the directory you started Claude in:
 
 ```toml
-model = "gpt-5.4-mini"
+model = "gpt-6-luna"
 model_reasoning_effort = "high"
 ```
 

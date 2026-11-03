@@ -1,7 +1,7 @@
 # Prompt Blocks
 
-Use these blocks selectively when composing Codex or GPT-5.4 prompts.
-Wrap each block in the XML tag shown in its heading.
+Optional building blocks for Codex prompts. Most prompts need only `task` plus one or two others; a short plain-prose prompt is fine for simple work.
+When you use a block, wrap it in the XML tag shown in its heading and keep it consistent with the rest of the prompt.
 
 ## Core Wrapper
 
@@ -31,12 +31,12 @@ Put the highest-value findings or decisions first.
 
 ### `compact_output_contract`
 
-Use when you want concise prose instead of a schema.
+Use when you want concise prose instead of a schema. Models default to verbose, heavily formatted output, so this is worth including.
 
 ```xml
 <compact_output_contract>
-Keep the final answer compact and structured.
-Do not include long scene-setting or repeated recap.
+Keep the final answer short and plain.
+No scene-setting, recap, or heavy formatting.
 </compact_output_contract>
 ```
 
@@ -44,18 +44,18 @@ Do not include long scene-setting or repeated recap.
 
 ### `default_follow_through_policy`
 
-Use when Codex should act without asking routine questions.
+Use in most prompts. Counters the tendency to ask for clarification and stop early.
 
 ```xml
 <default_follow_through_policy>
-Default to the most reasonable low-risk interpretation and keep going.
-Only stop to ask questions when a missing detail changes correctness, safety, or an irreversible action.
+Default to the most reasonable low-risk interpretation and keep going until the goal is complete.
+Only stop to ask when a missing detail changes correctness or safety, or the next step is destructive or irreversible.
 </default_follow_through_policy>
 ```
 
 ### `completeness_contract`
 
-Use for debugging, implementation, or any multi-step task that should not stop early.
+Use for debugging, implementation, or any multi-step task where Codex might stop at the first plausible answer.
 
 ```xml
 <completeness_contract>
@@ -67,12 +67,12 @@ Check whether there are follow-on fixes, edge cases, or cleanup needed for a cor
 
 ### `verification_loop`
 
-Use when correctness matters.
+Use when correctness matters. Scale it to the change: omit it for trivial edits.
 
 ```xml
 <verification_loop>
-Before finalizing, verify the result against the task requirements and the changed files or tool outputs.
-If a check fails, revise the answer instead of reporting the first draft.
+Before finalizing, run the checks that fit the size of the change (a targeted test for a small edit, broader verification only for large or risky changes).
+If a check fails, revise instead of reporting the first draft.
 </verification_loop>
 ```
 
@@ -124,17 +124,6 @@ Keep changes tightly scoped to the stated task.
 Avoid unrelated refactors, renames, or cleanup unless they are required for correctness.
 Call out any risky or irreversible action before taking it.
 </action_safety>
-```
-
-### `tool_persistence_rules`
-
-Use for long-running tool-heavy tasks.
-
-```xml
-<tool_persistence_rules>
-Keep using tools until you have enough evidence to finish the task confidently.
-Do not abandon the workflow after a partial read when another targeted check would change the answer.
-</tool_persistence_rules>
 ```
 
 ## Task-Specific Blocks
