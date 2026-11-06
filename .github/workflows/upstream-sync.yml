@@ -72,14 +72,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if lease="$(git rev-parse --verify --quiet "refs/remotes/origin/$SYNC_BRANCH")"; then
-            if git merge-base --is-ancestor upstream/main "origin/$SYNC_BRANCH" &&
-              git merge-base --is-ancestor origin/main "origin/$SYNC_BRANCH"; then
-              echo "status=current" >> "$GITHUB_OUTPUT"
-              echo "$SYNC_BRANCH already contains upstream main and fork main; leaving it as is."
-              exit 0
-            fi
-          fi
+          lease="$(git rev-parse --verify --quiet "refs/remotes/origin/$SYNC_BRANCH" || true)"
           echo "lease=$lease" >> "$GITHUB_OUTPUT"
 
           quote="'"
@@ -101,6 +94,15 @@ jobs:
               while IFS= read -r file; do printf -- "- \`%s\`\n" "${file//\`/$quote}"; done > "$RUNNER_TEMP/blocked-files.md"
             echo "status=workflows" >> "$GITHUB_OUTPUT"
             echo "::warning::Upstream changes workflow files, which GITHUB_TOKEN cannot push; reporting in an issue."
+            exit 0
+          fi
+
+          # Only a branch whose tree is exactly the fresh merge counts as current; anything else
+          # (including extra commits pushed to it) is regenerated, so the PR never carries
+          # unreviewed changes under the bot's description and always gets CI.
+          if [ -n "$lease" ] && [ "$(git rev-parse "HEAD^{tree}")" = "$(git rev-parse "$lease^{tree}")" ]; then
+            echo "status=current" >> "$GITHUB_OUTPUT"
+            echo "$SYNC_BRANCH already matches the merge of upstream main into fork main; leaving it as is."
             exit 0
           fi
 
