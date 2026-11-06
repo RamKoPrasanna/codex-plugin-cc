@@ -1,6 +1,6 @@
 ---
 description: Run a Codex code review against local git state
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>]'
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model|sol>] [--force]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -38,6 +38,7 @@ Argument handling:
 - The companion script parses `--wait` and `--background`, but Claude Code's `Bash(..., run_in_background: true)` is what actually detaches the run.
 - `/codex:review` is native-review only. It does not support staged-only review, unstaged-only review, or extra focus text.
 - If the user needs custom review instructions or more adversarial framing, they should use `/codex:adversarial-review`.
+- Each change gets one standard review round (`/codex:review` and `/codex:adversarial-review` share it). If the companion exits with code 2 and a "Refused: ... Pass --force to run another round" message, return that message verbatim. Do not add `--force` yourself; only pass it when the user explicitly asked for another round.
 
 Foreground flow:
 - Run:
@@ -59,3 +60,4 @@ Bash({
 ```
 - Do not call `BashOutput` or wait for completion in this turn.
 - After launching the command, tell the user: "Codex review started in the background. Check `/codex:status` for progress."
+- A refused round creates no job, so `/codex:status` will not list it. When the background task finishes with exit code 2, return its "Refused: ..." message verbatim instead of pointing to `/codex:status`.

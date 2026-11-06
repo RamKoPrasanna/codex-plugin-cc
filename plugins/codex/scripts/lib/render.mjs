@@ -55,8 +55,21 @@ function normalizeReviewFinding(finding, index) {
     file: typeof source.file === "string" && source.file.trim() ? source.file.trim() : "unknown",
     line_start: lineStart,
     line_end: lineEnd,
-    recommendation: typeof source.recommendation === "string" ? source.recommendation.trim() : ""
+    recommendation: typeof source.recommendation === "string" ? source.recommendation.trim() : "",
+    cwe: optionalTrimmedString(source.cwe),
+    exploitability: optionalTrimmedString(source.exploitability),
+    attack_path: optionalTrimmedString(source.attack_path)
   };
+}
+
+function optionalTrimmedString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function appendQuotaLine(lines, quotaLine) {
+  if (quotaLine) {
+    lines.push(quotaLine);
+  }
 }
 
 function normalizeReviewResultData(data) {
@@ -253,11 +266,10 @@ export function renderReviewResult(parsedResult, meta) {
     `# Codex ${meta.reviewLabel}`,
     "",
     `Target: ${meta.targetLabel}`,
-    `Verdict: ${data.verdict}`,
-    "",
-    data.summary,
-    ""
+    `Verdict: ${data.verdict}`
   ];
+  appendQuotaLine(lines, meta.quotaLine);
+  lines.push("", data.summary, "");
 
   if (findings.length === 0) {
     lines.push("No material findings.");
@@ -266,7 +278,17 @@ export function renderReviewResult(parsedResult, meta) {
     for (const finding of findings) {
       const lineSuffix = formatLineRange(finding);
       lines.push(`- [${finding.severity}] ${finding.title} (${finding.file}${lineSuffix})`);
+      const securityTags = [
+        finding.cwe ? finding.cwe : null,
+        finding.exploitability ? `exploitability: ${finding.exploitability}` : null
+      ].filter(Boolean);
+      if (securityTags.length > 0) {
+        lines.push(`  ${securityTags.join(" | ")}`);
+      }
       lines.push(`  ${finding.body}`);
+      if (finding.attack_path) {
+        lines.push(`  Attack path: ${finding.attack_path}`);
+      }
       if (finding.recommendation) {
         lines.push(`  Recommendation: ${finding.recommendation}`);
       }
@@ -291,9 +313,10 @@ export function renderNativeReviewResult(result, meta) {
   const lines = [
     `# Codex ${meta.reviewLabel}`,
     "",
-    `Target: ${meta.targetLabel}`,
-    ""
+    `Target: ${meta.targetLabel}`
   ];
+  appendQuotaLine(lines, meta.quotaLine);
+  lines.push("");
 
   if (stdout) {
     lines.push(stdout);
