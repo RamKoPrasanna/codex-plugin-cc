@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.1
+
+- Fork upstream sync workflow: a daily job opens or updates an `upstream-sync` pull request merging `openai/codex-plugin-cc` main into the fork, dispatches CI on it, and files an issue instead when the merge conflicts or touches workflow files.
+
 ## 1.2.0
 
 - `security-review` subcommand and `/codex:security-review`: always-Daybreak defensive review on `gpt-6-sol`, with `cwe`, `attack_path`, and `exploitability` on every finding (schema `security-review-output.schema.json`).
