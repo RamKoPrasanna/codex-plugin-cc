@@ -190,12 +190,37 @@ export function resolveReviewTarget(cwd, options = {}) {
   };
 }
 
-// Identifies "the same change" for the one-round review guard: fix-up edits on the same HEAD
-// (working tree) or new commits on the same branch since the same merge-base count as one change.
+function resolveForkPoint(cwd, baseRef) {
+  const mergeBase = git(cwd, ["merge-base", "HEAD", baseRef]);
+  if (mergeBase.status === 0 && mergeBase.stdout.trim()) {
+    return mergeBase.stdout.trim();
+  }
+  // Shallow clones, unrelated histories and unborn bases have no merge-base; the key must not
+  // break native review there.
+  const resolved = git(cwd, ["rev-parse", "--verify", "--quiet", `${baseRef}^{commit}`]);
+  return resolved.status === 0 && resolved.stdout.trim() ? resolved.stdout.trim() : `unresolved-${baseRef}`;
+}
+
+function detectDefaultBranchOrNull(cwd) {
+  try {
+    return detectDefaultBranch(cwd);
+  } catch {
+    return null;
+  }
+}
+
+// Identifies "the same change" for the one-round review guard. On a feature branch the key is the
+// branch plus its fork point whatever scope `auto` picked, so a branch review, an uncommitted
+// fix-up, and the fix-up commit all count as one change. Working-tree keys (HEAD sha) are kept
+// for the default branch and detached HEADs, where there is no branch to anchor on.
 export function resolveReviewChangeKey(cwd, target) {
-  if (target.mode === "branch") {
-    const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", target.baseRef]).stdout.trim();
-    return `branch:${getCurrentBranch(cwd)}@${mergeBase}`;
+  const branch = getCurrentBranch(cwd);
+  const onNamedBranch = branch !== "HEAD";
+  const baseRef = target.mode === "branch" ? target.baseRef : onNamedBranch ? detectDefaultBranchOrNull(cwd) : null;
+  const isBaseBranch = baseRef !== null && (baseRef === branch || baseRef === `origin/${branch}`);
+
+  if (target.mode === "branch" || (onNamedBranch && baseRef !== null && !isBaseBranch)) {
+    return `branch:${branch}@${resolveForkPoint(cwd, baseRef)}`;
   }
   const head = git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]);
   return `working-tree:${head.status === 0 ? head.stdout.trim() : "unborn"}`;

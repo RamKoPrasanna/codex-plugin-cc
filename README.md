@@ -140,7 +140,7 @@ Runs a defensive security review of the same targets as `/codex:adversarial-revi
 
 #### One review round per change
 
-Reviews are limited to one completed round per change and review class: `/codex:review` and `/codex:adversarial-review` share the standard class, `/codex:security-review` has its own. A change is the HEAD commit for working-tree reviews, or the branch name plus its merge-base for branch reviews, so fix-up edits and fix-up commits count as the same change. A repeat is refused with exit code 2 and the earlier job id and verdict. Pass `--force` to run another round anyway. Failed and cancelled runs do not count.
+Reviews are limited to one completed round per change and review class: `/codex:review` and `/codex:adversarial-review` share the standard class, `/codex:security-review` has its own. On a feature branch, a change is the branch name plus its merge-base with the base branch, whichever scope the review picked, so the branch review, uncommitted fix-ups and fix-up commits all count as one change. On the default branch or a detached HEAD, a change is the HEAD commit. A different `--base` (for example `HEAD~1`) gives a new merge-base and therefore a new round, which is how a phased build gets one round per phase. A repeat is refused with exit code 2 and the earlier job id and verdict. Pass `--force` to run another round anyway. Failed and cancelled runs do not count.
 
 Each review also prints one `Codex quota:` line with the remaining percentage and reset time of your Codex rate-limit windows, when the account exposes them.
 

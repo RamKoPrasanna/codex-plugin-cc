@@ -1120,6 +1120,39 @@ test("one-round guard treats fix-up commits on a branch as the same change", () 
   assert.match(second.stderr, /Pass --force to run another round/);
 });
 
+test("one-round guard keys a feature branch the same whether auto picks branch or working tree", () => {
+  const { repo, binDir } = setupDaybreakRepo();
+  const env = buildEnv(binDir);
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  run("git", ["commit", "-am", "feature work"], { cwd: repo });
+  const mergeBase = run("git", ["merge-base", "HEAD", "main"], { cwd: repo }).stdout.trim();
+
+  const first = run("node", [SCRIPT, "adversarial-review"], { cwd: repo, env });
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(readJobFiles(repo)[0].request.changeKey, `branch:feature@${mergeBase}`);
+
+  // Uncommitted fix-up: auto switches to the working tree, but it is still the same change.
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0]?.id;\n");
+  const dirty = run("node", [SCRIPT, "adversarial-review"], { cwd: repo, env });
+  assert.equal(dirty.status, 2, dirty.stderr);
+
+  run("git", ["commit", "-am", "fix-up"], { cwd: repo });
+  const committed = run("node", [SCRIPT, "review"], { cwd: repo, env });
+  assert.equal(committed.status, 2, committed.stderr);
+});
+
+test("change key falls back to the base commit when there is no merge-base", () => {
+  const { repo, binDir } = setupDaybreakRepo();
+  const env = buildEnv(binDir);
+  run("git", ["checkout", "--orphan", "unrelated"], { cwd: repo });
+  run("git", ["commit", "-m", "unrelated root"], { cwd: repo });
+  const mainSha = run("git", ["rev-parse", "main"], { cwd: repo }).stdout.trim();
+
+  const result = run("node", [SCRIPT, "review", "--base", "main"], { cwd: repo, env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readJobFiles(repo)[0].request.changeKey, `branch:unrelated@${mainSha}`);
+});
+
 test("reviews show a quota line when rate limits are readable", () => {
   const { repo, binDir } = setupDaybreakRepo();
 
