@@ -3,6 +3,7 @@
 ## 1.2.1
 
 - Fork upstream sync workflow: a daily job opens or updates an `upstream-sync` pull request merging `openai/codex-plugin-cc` main into the fork, dispatches CI on it, and files an issue instead when the merge conflicts or touches workflow files.
+- Test suite no longer leaves `app-server-broker.mjs` processes running: every test tears down the brokers its temp workspaces started through the SessionEnd hook.
 
 ## 1.2.0
 

@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
-import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
+import { initGitRepo, makeTempDir, run, shutdownTrackedBrokers } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
 import { pickNewestSolModel } from "../plugins/codex/scripts/lib/codex.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
@@ -2615,6 +2615,36 @@ test("setup reuses an existing shared app-server without starting another one", 
     })
   });
   assert.equal(cleanup.status, 0, cleanup.stderr);
+});
+
+test("test teardown stops the shared broker a companion command started", async () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const review = run("node", [SCRIPT, "review"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(review.status, 0, review.stderr);
+
+  const brokerSession = loadBrokerSession(repo);
+  assert.ok(brokerSession, "review should start a shared broker");
+  assert.ok(Number.isFinite(brokerSession.pid));
+
+  shutdownTrackedBrokers();
+
+  assert.equal(loadBrokerSession(repo), null);
+  await waitFor(() => {
+    try {
+      process.kill(brokerSession.pid, 0);
+      return false;
+    } catch (error) {
+      return error.code === "ESRCH";
+    }
+  });
 });
 
 test("status reports shared session runtime when a lazy broker is active", () => {
