@@ -126,7 +126,27 @@ This command is read-only. It does not fix code.
 
 #### Daybreak
 
-`--daybreak` runs the turn under OpenAI's Daybreak Blue cyber access program, for defensive security reviews. It works on `/codex:adversarial-review` and `/codex:rescue`; `/codex:review` rejects it because the native review endpoint has no access-program field. Without `--model` it uses `gpt-6-sol`. Before starting, the plugin checks the model catalog and fails fast with the list of Daybreak-capable models if the chosen one is not among them. Your account must already be enrolled; the flag requests the program but does not grant it.
+`--daybreak` runs the turn under OpenAI's Daybreak Blue cyber access program, for defensive security reviews. It works on `/codex:adversarial-review` and `/codex:rescue`, and is always on for `/codex:security-review`; `/codex:review` rejects it because the native review endpoint has no access-program field. Without `--model` it uses `gpt-6-sol`. Before starting, the plugin checks the model catalog and fails fast with the list of Daybreak-capable models if the chosen one is not among them. Your account must already be enrolled; the flag requests the program but does not grant it.
+
+### `/codex:security-review`
+
+Runs a defensive security review of the same targets as `/codex:adversarial-review` (working tree, branch, `--base <ref>`, optional focus text). It always runs under [Daybreak](#daybreak) on `gpt-6-sol`; `--model` can pick another Daybreak-capable model. Findings add a CWE ID, an exploitability rating (high, medium, low, theoretical), and the concrete attack path, and keep the same `verdict`/`summary`/`findings`/`next_steps` JSON envelope as the other reviews.
+
+```bash
+/codex:security-review
+/codex:security-review --base main focus on the new upload handler
+/codex:security-review --background --json
+```
+
+#### One review round per change
+
+Reviews are limited to one completed round per change and review class: `/codex:review` and `/codex:adversarial-review` share the standard class, `/codex:security-review` has its own. A change is the HEAD commit for working-tree reviews, or the branch name plus its merge-base for branch reviews, so fix-up edits and fix-up commits count as the same change. A repeat is refused with exit code 2 and the earlier job id and verdict. Pass `--force` to run another round anyway. Failed and cancelled runs do not count.
+
+Each review also prints one `Codex quota:` line with the remaining percentage and reset time of your Codex rate-limit windows, when the account exposes them.
+
+#### Model aliases
+
+`--model sol` resolves at run time to the newest visible `gpt-*-sol` model in the Codex catalog (for example `gpt-6.1-sol`), on reviews and rescue tasks. `luna` (or the legacy `spark`) maps to `gpt-6-luna`. Every job records the resolved model, effort, and Daybreak state under `request` in `/codex:status <job-id> --json` and `/codex:result <job-id> --json`.
 
 ### `/codex:rescue`
 

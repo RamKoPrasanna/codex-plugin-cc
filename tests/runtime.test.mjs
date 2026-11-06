@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { buildEnv, installFakeCodex } from "./fake-codex-fixture.mjs";
 import { initGitRepo, makeTempDir, run } from "./helpers.mjs";
 import { loadBrokerSession, saveBrokerSession } from "../plugins/codex/scripts/lib/broker-lifecycle.mjs";
+import { pickNewestSolModel } from "../plugins/codex/scripts/lib/codex.mjs";
 import { resolveStateDir } from "../plugins/codex/scripts/lib/state.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -872,6 +873,293 @@ test("task --daybreak on a model without Daybreak fails before starting a thread
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Daybreak is not available for model gpt-6\.1-sol\. Models that support it: gpt-6-sol\./);
   assert.equal(readState().lastThreadStart, undefined);
+});
+
+function readJobFiles(repo) {
+  const jobsDir = path.join(resolveStateDir(repo), "jobs");
+  return fs
+    .readdirSync(jobsDir)
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => JSON.parse(fs.readFileSync(path.join(jobsDir, name), "utf8")));
+}
+
+function headSha(repo) {
+  return run("git", ["rev-parse", "HEAD"], { cwd: repo }).stdout.trim();
+}
+
+test("pickNewestSolModel compares versions numerically and skips hidden models", () => {
+  assert.equal(
+    pickNewestSolModel([
+      { model: "gpt-6.9-sol", hidden: false },
+      { model: "gpt-6.10-sol", hidden: false },
+      { model: "gpt-7-sol", hidden: true },
+      { model: "gpt-6-luna", hidden: false },
+      { model: "gpt-6.10-sol-preview", hidden: false }
+    ]),
+    "gpt-6.10-sol"
+  );
+  assert.equal(pickNewestSolModel([{ model: "gpt-6-sol", hidden: true }]), null);
+});
+
+test("security-review runs under Daybreak on gpt-6-sol with the security schema and renders CWE fields", () => {
+  const { repo, binDir, readState } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "security-review", "check the lookup route"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = readState();
+  assert.equal(state.lastTurnStart.cyberAccessProgram, "daybreakBlue");
+  assert.equal(state.lastTurnStart.model, "gpt-6-sol");
+  assert.equal(state.capabilities.experimentalApi, true);
+  const findingSchema = state.lastTurnStart.outputSchema.properties.findings.items;
+  assert.ok(findingSchema.properties.cwe);
+  assert.ok(findingSchema.required.includes("cwe"));
+  assert.ok(findingSchema.required.includes("attack_path"));
+  assert.ok(findingSchema.required.includes("exploitability"));
+  assert.match(state.lastTurnStart.prompt, /defensive security review/);
+  assert.match(state.lastTurnStart.prompt, /check the lookup route/);
+
+  assert.match(result.stdout, /^# Codex Security Review/);
+  assert.match(result.stdout, /\[critical\] SQL injection in user lookup \(src\/app\.js:4-6\)/);
+  assert.match(result.stdout, /CWE-89 \| exploitability: high/);
+  assert.match(result.stdout, /Attack path: Unauthenticated GET \/users\?id=/);
+
+  const [job] = readJobFiles(repo);
+  assert.equal(job.kind, "security-review");
+  assert.equal(job.kindLabel, "security-review");
+  assert.equal(job.title, "Codex Security Review");
+  assert.equal(job.status, "completed");
+  assert.deepEqual(job.request, {
+    model: "gpt-6-sol",
+    effort: null,
+    daybreak: true,
+    accessProgram: "daybreakBlue",
+    reviewClass: "security",
+    changeKey: `working-tree:${headSha(repo)}`
+  });
+  assert.equal(job.result.result.findings[0].cwe, "CWE-89");
+});
+
+test("security-review --model sol is refused because the newest sol model lacks Daybreak", () => {
+  const { repo, binDir, readState } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "security-review", "--model", "sol"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Daybreak is not available for model gpt-6\.1-sol\. Models that support it: gpt-6-sol\./);
+  assert.equal(readState().lastThreadStart, undefined);
+
+  // The failed attempt does not use up the security round.
+  const retry = run("node", [SCRIPT, "security-review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(retry.status, 0, retry.stderr);
+});
+
+test("task --model sol resolves to the newest visible sol model and records the request", () => {
+  const { repo, binDir, readState } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "task", "--model", "sol", "--effort", "high", "diagnose"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readState().lastTurnStart.model, "gpt-6.1-sol");
+  const expectedRequest = { model: "gpt-6.1-sol", effort: "high", daybreak: false, accessProgram: null };
+  const [job] = readJobFiles(repo);
+  assert.deepEqual(job.request, expectedRequest);
+
+  const status = run("node", [SCRIPT, "status", job.id, "--json"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(status.status, 0, status.stderr);
+  assert.deepEqual(JSON.parse(status.stdout).job.request, expectedRequest);
+
+  const stored = run("node", [SCRIPT, "result", job.id, "--json"], { cwd: repo, env: buildEnv(binDir) });
+  assert.equal(stored.status, 0, stored.stderr);
+  assert.deepEqual(JSON.parse(stored.stdout).storedJob.request, expectedRequest);
+});
+
+test("task records the Daybreak default model and access program in its request", async () => {
+  const { repo, binDir } = setupDaybreakRepo();
+
+  const foreground = run("node", [SCRIPT, "task", "--daybreak", "audit"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(foreground.status, 0, foreground.stderr);
+  assert.deepEqual(readJobFiles(repo)[0].request, {
+    model: "gpt-6-sol",
+    effort: null,
+    daybreak: true,
+    accessProgram: "daybreakBlue"
+  });
+
+  const launched = run("node", [SCRIPT, "task", "--background", "--json", "--model", "sol", "investigate"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(launched.status, 0, launched.stderr);
+  const { jobId } = JSON.parse(launched.stdout);
+  const waited = run("node", [SCRIPT, "status", jobId, "--wait", "--timeout-ms", "15000", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(waited.status, 0, waited.stderr);
+  const backgroundJob = await waitFor(() => {
+    const job = readJobFiles(repo).find((candidate) => candidate.id === jobId);
+    return job?.status === "completed" ? job : null;
+  });
+  assert.equal(backgroundJob.request.model, "gpt-6.1-sol");
+  assert.equal(backgroundJob.request.daybreak, false);
+  assert.equal(backgroundJob.request.accessProgram, null);
+  assert.equal(backgroundJob.request.effort, null);
+});
+
+test("--model sol fails clearly when model/list is unavailable", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "model-list-fails");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+
+  const result = run("node", [SCRIPT, "task", "--model", "sol", "diagnose"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Cannot resolve `--model sol`: model\/list failed \(model catalog unavailable\)/);
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.turnStarts, undefined);
+});
+
+test("review --model sol forwards the resolved model and records the review request", () => {
+  const { repo, binDir, readState } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "review", "--model", "sol"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readState().lastThreadStart.model, "gpt-6.1-sol");
+  assert.deepEqual(readJobFiles(repo)[0].request, {
+    model: "gpt-6.1-sol",
+    effort: null,
+    daybreak: false,
+    accessProgram: null,
+    reviewClass: "standard",
+    changeKey: `working-tree:${headSha(repo)}`
+  });
+});
+
+test("one-round guard refuses a second standard review of the same change unless --force", () => {
+  const { repo, binDir } = setupDaybreakRepo();
+  const env = buildEnv(binDir);
+
+  const first = run("node", [SCRIPT, "adversarial-review"], { cwd: repo, env });
+  assert.equal(first.status, 0, first.stderr);
+  const firstJob = readJobFiles(repo)[0];
+
+  // Fix-up edits on the same HEAD are still the same change.
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0]?.id;\n");
+  const second = run("node", [SCRIPT, "adversarial-review"], { cwd: repo, env });
+  assert.equal(second.status, 2);
+  assert.match(second.stderr, new RegExp(`job ${firstJob.id}, verdict needs-attention`));
+  assert.match(second.stderr, /Pass --force to run another round/);
+  assert.equal(second.stdout, "");
+
+  const native = run("node", [SCRIPT, "review", "--json"], { cwd: repo, env });
+  assert.equal(native.status, 2);
+  const refusal = JSON.parse(native.stdout);
+  assert.equal(refusal.status, "refused");
+  assert.equal(refusal.reviewClass, "standard");
+  assert.equal(refusal.priorJob.id, firstJob.id);
+  assert.equal(refusal.priorJob.verdict, "needs-attention");
+  assert.equal(readJobFiles(repo).length, 1);
+
+  const forced = run("node", [SCRIPT, "adversarial-review", "--force"], { cwd: repo, env });
+  assert.equal(forced.status, 0, forced.stderr);
+
+  const security = run("node", [SCRIPT, "security-review"], { cwd: repo, env });
+  assert.equal(security.status, 0, security.stderr);
+  const securityAgain = run("node", [SCRIPT, "security-review"], { cwd: repo, env });
+  assert.equal(securityAgain.status, 2);
+  assert.match(securityAgain.stderr, /a security review round already completed/);
+
+  run("git", ["commit", "-am", "fix"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items.at(0)?.id;\n");
+  const nextChange = run("node", [SCRIPT, "adversarial-review"], { cwd: repo, env });
+  assert.equal(nextChange.status, 0, nextChange.stderr);
+});
+
+test("one-round guard treats fix-up commits on a branch as the same change", () => {
+  const { repo, binDir } = setupDaybreakRepo();
+  const env = buildEnv(binDir);
+  run("git", ["checkout", "-b", "feature"], { cwd: repo });
+  run("git", ["commit", "-am", "feature work"], { cwd: repo });
+
+  const first = run("node", [SCRIPT, "adversarial-review", "--base", "main"], { cwd: repo, env });
+  assert.equal(first.status, 0, first.stderr);
+  const mergeBase = run("git", ["merge-base", "HEAD", "main"], { cwd: repo }).stdout.trim();
+  assert.equal(readJobFiles(repo)[0].request.changeKey, `branch:feature@${mergeBase}`);
+
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0]?.id;\n");
+  run("git", ["commit", "-am", "fix-up"], { cwd: repo });
+  const second = run("node", [SCRIPT, "adversarial-review", "--base", "main"], { cwd: repo, env });
+  assert.equal(second.status, 2);
+  assert.match(second.stderr, /Pass --force to run another round/);
+});
+
+test("reviews show a quota line when rate limits are readable", () => {
+  const { repo, binDir } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "adversarial-review", "--json"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const payload = JSON.parse(result.stdout);
+  assert.match(
+    payload.quota.line,
+    /^Codex quota: 58% left in 5h window \(resets \d{4}-\d{2}-\d{2}T\d{2}:\d{2}Z\); 90% left in 7d window \(resets /
+  );
+  assert.equal(payload.quota.windows[0].usedPercent, 42);
+  assert.match(readJobFiles(repo)[0].rendered, /\nCodex quota: 58% left in 5h window/);
+  assert.match(fs.readFileSync(readJobFiles(repo)[0].logFile, "utf8"), /Codex quota: 58% left/);
+});
+
+test("reviews skip the quota line silently when the rate-limit read fails", () => {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  installFakeCodex(binDir, "rate-limits-fail");
+  initGitRepo(repo);
+  fs.writeFileSync(path.join(repo, "README.md"), "hello\n");
+  run("git", ["add", "README.md"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "README.md"), "hello again\n");
+
+  const result = run("node", [SCRIPT, "review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /No material issues found/);
+  assert.doesNotMatch(result.stdout, /Codex quota/);
+  assert.doesNotMatch(result.stderr, /Codex quota|usage endpoint unavailable/);
+  const state = JSON.parse(fs.readFileSync(path.join(binDir, "fake-codex-state.json"), "utf8"));
+  assert.equal(state.rateLimitReads, 1);
 });
 
 test("task logs reasoning summaries and assistant messages to the job log", () => {
@@ -2231,7 +2519,7 @@ test("commands lazily start and reuse one shared app-server after first use", as
     return;
   }
 
-  const adversarial = run("node", [SCRIPT, "adversarial-review"], {
+  const adversarial = run("node", [SCRIPT, "adversarial-review", "--force"], {
     cwd: repo,
     env
   });

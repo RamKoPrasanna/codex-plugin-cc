@@ -190,7 +190,31 @@ function nativeReviewText(target) {
   return "Reviewed uncommitted changes.\\nNo material issues found.";
 }
 
-function structuredReviewPayload(prompt) {
+function structuredReviewPayload(prompt, outputSchema) {
+  const findingProperties = outputSchema?.properties?.findings?.items?.properties ?? {};
+  if ("cwe" in findingProperties) {
+    return JSON.stringify({
+      verdict: "needs-attention",
+      summary: "One injectable query reachable from an unauthenticated route.",
+      findings: [
+        {
+          severity: "critical",
+          title: "SQL injection in user lookup",
+          body: "The handler concatenates the id parameter into the query string.",
+          file: "src/app.js",
+          line_start: 4,
+          line_end: 6,
+          confidence: 0.9,
+          recommendation: "Use a parameterized query.",
+          cwe: "CWE-89",
+          attack_path: "Unauthenticated GET /users?id= flows into db.query without escaping.",
+          exploitability: "high"
+        }
+      ],
+      next_steps: ["Add a regression test with a quote in the id."]
+    });
+  }
+
   if (prompt.includes("adversarial software review")) {
     if (BEHAVIOR === "adversarial-clean") {
       return JSON.stringify({
@@ -295,14 +319,50 @@ rl.on("line", (line) => {
         break;
 
       case "model/list":
+        if (BEHAVIOR === "model-list-fails") {
+          throw new Error("model catalog unavailable");
+        }
         send({
           id: message.id,
           result: {
             data: [
+              { id: "gpt-5.6-sol", model: "gpt-5.6-sol", hidden: false, availableAccessPrograms: { cyber: ["standard"] } },
               { id: "gpt-6.1-sol", model: "gpt-6.1-sol", hidden: false, availableAccessPrograms: { cyber: ["standard"] } },
-              { id: "gpt-6-sol", model: "gpt-6-sol", hidden: false, availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] } }
+              { id: "gpt-6-sol", model: "gpt-6-sol", hidden: false, availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] } },
+              { id: "gpt-7-sol", model: "gpt-7-sol", hidden: true, availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] } },
+              { id: "gpt-6-luna", model: "gpt-6-luna", hidden: false, availableAccessPrograms: null }
             ],
             nextCursor: null
+          }
+        });
+        break;
+
+      case "account/rateLimits/read":
+        state.rateLimitReads = (state.rateLimitReads || 0) + 1;
+        saveState(state);
+        if (BEHAVIOR === "rate-limits-fail") {
+          throw new Error("usage endpoint unavailable");
+        }
+        send({
+          id: message.id,
+          result: {
+            ordinaryUsageAllowed: true,
+            rateLimits: {
+              limitId: "codex",
+              limitName: null,
+              normalModelSlug: null,
+              primary: { usedPercent: 42, windowDurationMins: 300, resetsAt: 1793883600 },
+              secondary: { usedPercent: 10, windowDurationMins: 10080, resetsAt: 1794240000 },
+              credits: null,
+              individualLimit: null,
+              spendControlReached: null,
+              planType: null,
+              rateLimitReachedType: null
+            },
+            rateLimitsByLimitId: null,
+            rateLimitResetCredits: null,
+            accountId: null,
+            rateLimitUpsell: null
           }
         });
         break;
@@ -468,6 +528,7 @@ rl.on("line", (line) => {
 	          model: message.params.model ?? null,
 	          effort: message.params.effort ?? null,
 	          cyberAccessProgram: message.params.cyberAccessProgram ?? null,
+	          outputSchema: message.params.outputSchema ?? null,
 	          prompt
 	        };
 	        state.turnStarts = [...(state.turnStarts || []), state.lastTurnStart];
@@ -475,7 +536,7 @@ rl.on("line", (line) => {
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
         const payload = message.params.outputSchema && message.params.outputSchema.properties && message.params.outputSchema.properties.verdict
-          ? structuredReviewPayload(prompt)
+          ? structuredReviewPayload(prompt, message.params.outputSchema)
           : taskPayload(prompt, thread.name && thread.name.startsWith("Codex Companion Task") && prompt.includes("Continue from the current thread state"));
 
         if (

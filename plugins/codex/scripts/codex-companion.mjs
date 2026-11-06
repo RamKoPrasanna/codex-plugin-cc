@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import {
     buildPersistentTaskThreadName,
+    DAYBREAK_ACCESS_PROGRAM,
+    DAYBREAK_DEFAULT_MODEL,
     DEFAULT_CONTINUE_PROMPT,
     findLatestTaskThread,
     getCodexAuthStatus,
@@ -18,12 +20,13 @@ import {
     interruptAppServerTurn,
     parseStructuredOutput,
     readOutputSchema,
+    resolveSolModel,
     runAppServerReview,
     runAppServerTurn
   } from "./lib/codex.mjs";
 import { resolveClaudeSessionPath } from "./lib/claude-session-transfer.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
-import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
+import { collectReviewContext, ensureGitRepository, resolveReviewChangeKey, resolveReviewTarget } from "./lib/git.mjs";
 import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import {
@@ -66,6 +69,7 @@ import {
 
 const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
 const REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
+const SECURITY_REVIEW_SCHEMA = path.join(ROOT_DIR, "schemas", "security-review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"]);
@@ -73,16 +77,36 @@ const MODEL_ALIASES = new Map([
   ["luna", "gpt-6-luna"],
   ["spark", "gpt-6-luna"]
 ]);
+const SOL_MODEL_ALIAS = "sol";
 const STOP_REVIEW_TASK_MARKER = "Run a stop-gate review of the previous Claude turn.";
+const REVIEW_ROUND_REFUSED_EXIT_CODE = 2;
+const REVIEW_KINDS = new Map([
+  ["Review", { kind: "review", reviewClass: "standard" }],
+  [
+    "Adversarial Review",
+    { kind: "adversarial-review", reviewClass: "standard", promptName: "adversarial-review", schemaPath: REVIEW_SCHEMA }
+  ],
+  [
+    "Security Review",
+    {
+      kind: "security-review",
+      reviewClass: "security",
+      promptName: "security-review",
+      schemaPath: SECURITY_REVIEW_SCHEMA,
+      alwaysDaybreak: true
+    }
+  ]
+]);
 
 function printUsage() {
   console.log(
     [
       "Usage:",
       "  node scripts/codex-companion.mjs setup [--enable-review-gate|--disable-review-gate] [--json]",
-      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>]",
-      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--daybreak] [focus text]",
-      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|luna>] [--effort <low|medium|high|xhigh|max|ultra>] [--daybreak] [prompt]",
+      "  node scripts/codex-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|sol|luna>] [--force] [--json]",
+      "  node scripts/codex-companion.mjs adversarial-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model|sol|luna>] [--daybreak] [--force] [--json] [focus text]",
+      "  node scripts/codex-companion.mjs security-review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <model>] [--force] [--json] [focus text]",
+      "  node scripts/codex-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <model|sol|luna>] [--effort <low|medium|high|xhigh|max|ultra>] [--daybreak] [prompt]",
       "  node scripts/codex-companion.mjs transfer [--source <claude-jsonl>] [--json]",
       "  node scripts/codex-companion.mjs status [job-id] [--all] [--json]",
       "  node scripts/codex-companion.mjs result [job-id] [--json]",
@@ -112,6 +136,24 @@ function normalizeRequestedModel(model) {
     return null;
   }
   return MODEL_ALIASES.get(normalized.toLowerCase()) ?? normalized;
+}
+
+async function resolveRequestedModel(cwd, model) {
+  const normalized = normalizeRequestedModel(model);
+  if (normalized?.toLowerCase() !== SOL_MODEL_ALIAS) {
+    return normalized;
+  }
+  ensureCodexAvailable(cwd);
+  return resolveSolModel(cwd);
+}
+
+function buildRunRequestMetadata({ model, effort, daybreak }) {
+  return {
+    model: model ?? (daybreak ? DAYBREAK_DEFAULT_MODEL : null),
+    effort: effort ?? null,
+    daybreak: Boolean(daybreak),
+    accessProgram: daybreak ? DAYBREAK_ACCESS_PROGRAM : null
+  };
 }
 
 function normalizeReasoningEffort(effort) {
@@ -241,10 +283,10 @@ async function handleSetup(argv) {
   outputResult(options.json ? finalReport : renderSetupReport(finalReport), options.json);
 }
 
-function buildAdversarialReviewPrompt(context, focusText) {
-  const template = loadPromptTemplate(ROOT_DIR, "adversarial-review");
+function buildStructuredReviewPrompt(promptName, reviewName, context, focusText) {
+  const template = loadPromptTemplate(ROOT_DIR, promptName);
   return interpolateTemplate(template, {
-    REVIEW_KIND: "Adversarial Review",
+    REVIEW_KIND: reviewName,
     TARGET_LABEL: context.target.label,
     USER_FOCUS: focusText || "No extra focus provided.",
     REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
@@ -368,11 +410,13 @@ async function executeReviewRun(request) {
   });
   const focusText = request.focusText?.trim() ?? "";
   const reviewName = request.reviewName ?? "Review";
+  const reviewKind = REVIEW_KINDS.get(reviewName);
   if (reviewName === "Review") {
     const reviewTarget = validateNativeReviewRequest(target, focusText);
     const result = await runAppServerReview(request.cwd, {
       target: reviewTarget,
       model: request.model,
+      reportQuota: true,
       onProgress: request.onProgress
     });
     const payload = {
@@ -385,7 +429,8 @@ async function executeReviewRun(request) {
         stderr: result.stderr,
         stdout: result.reviewText,
         reasoning: result.reasoningSummary
-      }
+      },
+      quota: result.quota ?? null
     };
     const rendered = renderNativeReviewResult(
       {
@@ -393,7 +438,12 @@ async function executeReviewRun(request) {
         stdout: result.reviewText,
         stderr: result.stderr
       },
-      { reviewLabel: reviewName, targetLabel: target.label, reasoningSummary: result.reasoningSummary }
+      {
+        reviewLabel: reviewName,
+        targetLabel: target.label,
+        reasoningSummary: result.reasoningSummary,
+        quotaLine: result.quota?.line ?? null
+      }
     );
 
     return {
@@ -410,13 +460,14 @@ async function executeReviewRun(request) {
   }
 
   const context = collectReviewContext(request.cwd, target);
-  const prompt = buildAdversarialReviewPrompt(context, focusText);
+  const prompt = buildStructuredReviewPrompt(reviewKind.promptName, reviewName, context, focusText);
   const result = await runAppServerTurn(context.repoRoot, {
     prompt,
     model: request.model,
     daybreak: request.daybreak,
     sandbox: "read-only",
-    outputSchema: readOutputSchema(REVIEW_SCHEMA),
+    outputSchema: readOutputSchema(reviewKind.schemaPath),
+    reportQuota: true,
     onProgress: request.onProgress
   });
   const parsed = parseStructuredOutput(result.finalMessage, {
@@ -441,7 +492,8 @@ async function executeReviewRun(request) {
     result: parsed.parsed,
     rawOutput: parsed.rawOutput,
     parseError: parsed.parseError,
-    reasoningSummary: result.reasoningSummary
+    reasoningSummary: result.reasoningSummary,
+    quota: result.quota ?? null
   };
 
   return {
@@ -452,7 +504,8 @@ async function executeReviewRun(request) {
     rendered: renderReviewResult(parsed, {
       reviewLabel: reviewName,
       targetLabel: context.target.label,
-      reasoningSummary: result.reasoningSummary
+      reasoningSummary: result.reasoningSummary,
+      quotaLine: result.quota?.line ?? null
     }),
     summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.finalMessage, `${reviewName} finished.`),
     jobTitle: `Codex ${reviewName}`,
@@ -536,7 +589,7 @@ async function executeTaskRun(request) {
 
 function buildReviewJobMetadata(reviewName, target) {
   return {
-    kind: reviewName === "Adversarial Review" ? "adversarial-review" : "review",
+    kind: REVIEW_KINDS.get(reviewName)?.kind ?? "review",
     title: reviewName === "Review" ? "Codex Review" : `Codex ${reviewName}`,
     summary: `${reviewName} ${target.label}`
   };
@@ -563,13 +616,13 @@ function renderQueuedTaskLaunch(payload) {
 }
 
 function getJobKindLabel(kind, jobClass) {
-  if (kind === "adversarial-review") {
-    return "adversarial-review";
+  if (kind === "adversarial-review" || kind === "security-review") {
+    return kind;
   }
   return jobClass === "review" ? "review" : "rescue";
 }
 
-function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false }) {
+function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summary, write = false, request = null }) {
   return createJobRecord({
     id: generateJobId(prefix),
     kind,
@@ -578,7 +631,8 @@ function createCompanionJob({ prefix, kind, title, workspaceRoot, jobClass, summ
     workspaceRoot,
     jobClass,
     summary,
-    write
+    write,
+    request
   });
 }
 
@@ -594,7 +648,7 @@ function createTrackedProgress(job, options = {}) {
   };
 }
 
-function buildTaskJob(workspaceRoot, taskMetadata, write) {
+function buildTaskJob(workspaceRoot, taskMetadata, write, request) {
   return createCompanionJob({
     prefix: "task",
     kind: "task",
@@ -602,16 +656,15 @@ function buildTaskJob(workspaceRoot, taskMetadata, write) {
     workspaceRoot,
     jobClass: "task",
     summary: taskMetadata.summary,
-    write
+    write,
+    request
   });
 }
 
-function buildTaskRequest({ cwd, model, effort, daybreak, prompt, write, resumeLast, jobId }) {
+function buildTaskRequest({ cwd, runRequest, prompt, write, resumeLast, jobId }) {
   return {
+    ...runRequest,
     cwd,
-    model,
-    effort,
-    daybreak,
     prompt,
     write,
     resumeLast,
@@ -715,14 +768,54 @@ function enqueueBackgroundTask(cwd, job, request) {
   };
 }
 
+function findCompletedReviewRound(workspaceRoot, reviewClass, changeKey) {
+  for (const job of sortJobsNewestFirst(listJobs(workspaceRoot))) {
+    if (job.jobClass !== "review" || job.status !== "completed") {
+      continue;
+    }
+    if (job.request?.reviewClass !== reviewClass || job.request?.changeKey !== changeKey) {
+      continue;
+    }
+    const storedJob = readStoredJob(workspaceRoot, job.id);
+    // A completed turn whose output never parsed produced no findings, so it did not use up the round.
+    if (storedJob?.result?.parseError) {
+      continue;
+    }
+    return { job, storedJob };
+  }
+  return null;
+}
+
+function buildReviewRoundRefusal(prior, reviewClass, changeKey) {
+  const verdict = prior.storedJob?.result?.result?.verdict ?? null;
+  const verdictText = verdict ? `verdict ${verdict}` : "no structured verdict";
+  const message =
+    `Refused: a ${reviewClass} review round already completed for this change (${changeKey}): ` +
+    `job ${prior.job.id}, ${verdictText}. One review round per change. Pass --force to run another round.`;
+  return {
+    status: "refused",
+    reason: "review-round-completed",
+    reviewClass,
+    changeKey,
+    priorJob: {
+      id: prior.job.id,
+      kind: prior.job.kind ?? null,
+      verdict,
+      completedAt: prior.job.completedAt ?? null
+    },
+    message
+  };
+}
+
 async function handleReviewCommand(argv, config) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["base", "scope", "model", "cwd"],
-    booleanOptions: ["json", "background", "wait", "daybreak"],
+    booleanOptions: ["json", "background", "wait", "daybreak", "force"],
     aliasMap: {
       m: "model"
     }
   });
+  const reviewKind = REVIEW_KINDS.get(config.reviewName);
 
   // review/start has no cyberAccessProgram field, so only turn-based reviews can run under Daybreak.
   if (options.daybreak && config.reviewName === "Review") {
@@ -738,6 +831,28 @@ async function handleReviewCommand(argv, config) {
   });
 
   config.validateRequest?.(target, focusText);
+
+  const changeKey = resolveReviewChangeKey(cwd, target);
+  if (!options.force) {
+    const prior = findCompletedReviewRound(workspaceRoot, reviewKind.reviewClass, changeKey);
+    if (prior) {
+      const refusal = buildReviewRoundRefusal(prior, reviewKind.reviewClass, changeKey);
+      if (options.json) {
+        outputResult(refusal, true);
+      }
+      process.stderr.write(`${refusal.message}\n`);
+      process.exitCode = REVIEW_ROUND_REFUSED_EXIT_CODE;
+      return;
+    }
+  }
+
+  const daybreak = Boolean(reviewKind.alwaysDaybreak || options.daybreak);
+  const model = await resolveRequestedModel(cwd, options.model);
+  const request = {
+    ...buildRunRequestMetadata({ model, effort: null, daybreak }),
+    reviewClass: reviewKind.reviewClass,
+    changeKey
+  };
   const metadata = buildReviewJobMetadata(config.reviewName, target);
   const job = createCompanionJob({
     prefix: "review",
@@ -745,7 +860,8 @@ async function handleReviewCommand(argv, config) {
     title: metadata.title,
     workspaceRoot,
     jobClass: "review",
-    summary: metadata.summary
+    summary: metadata.summary,
+    request
   });
   await runForegroundCommand(
     job,
@@ -754,8 +870,8 @@ async function handleReviewCommand(argv, config) {
         cwd,
         base: options.base,
         scope: options.scope,
-        model: options.model,
-        daybreak: Boolean(options.daybreak),
+        model: request.model,
+        daybreak,
         focusText,
         reviewName: config.reviewName,
         onProgress: progress
@@ -782,7 +898,6 @@ async function handleTask(argv) {
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
-  const model = normalizeRequestedModel(options.model);
   const effort = normalizeReasoningEffort(options.effort);
   const daybreak = Boolean(options.daybreak);
   const prompt = readTaskPrompt(cwd, options, positionals);
@@ -797,17 +912,20 @@ async function handleTask(argv) {
     prompt,
     resumeLast
   });
+  const runRequest = buildRunRequestMetadata({
+    model: await resolveRequestedModel(cwd, options.model),
+    effort,
+    daybreak
+  });
 
   if (options.background) {
     ensureCodexAvailable(cwd);
     requireTaskRequest(prompt, resumeLast);
 
-    const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+    const job = buildTaskJob(workspaceRoot, taskMetadata, write, runRequest);
     const request = buildTaskRequest({
       cwd,
-      model,
-      effort,
-      daybreak,
+      runRequest,
       prompt,
       write,
       resumeLast,
@@ -818,13 +936,13 @@ async function handleTask(argv) {
     return;
   }
 
-  const job = buildTaskJob(workspaceRoot, taskMetadata, write);
+  const job = buildTaskJob(workspaceRoot, taskMetadata, write, runRequest);
   await runForegroundCommand(
     job,
     (progress) =>
       executeTaskRun({
         cwd,
-        model,
+        model: runRequest.model,
         effort,
         daybreak,
         prompt,
@@ -1053,6 +1171,11 @@ async function main() {
     case "adversarial-review":
       await handleReviewCommand(argv, {
         reviewName: "Adversarial Review"
+      });
+      break;
+    case "security-review":
+      await handleReviewCommand(argv, {
+        reviewName: "Security Review"
       });
       break;
     case "task":

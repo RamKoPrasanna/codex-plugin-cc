@@ -1,6 +1,6 @@
 ---
 description: Run a Codex review that challenges the implementation approach and design choices
-argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model>] [--daybreak] [focus ...]'
+argument-hint: '[--wait|--background] [--base <ref>] [--scope auto|working-tree|branch] [--model <model|sol>] [--daybreak] [--force] [focus ...]'
 disable-model-invocation: true
 allowed-tools: Read, Glob, Grep, Bash(node:*), Bash(git:*), AskUserQuestion
 ---
@@ -43,6 +43,8 @@ Argument handling:
 - It supports working-tree review, branch review, and `--base <ref>`.
 - It does not support `--scope staged` or `--scope unstaged`.
 - Unlike `/codex:review`, it can still take extra focus text after the flags.
+- For a security-focused review, prefer `/codex:security-review`, which always runs under Daybreak with a CWE-tagged schema.
+- Each change gets one standard review round (`/codex:review` and `/codex:adversarial-review` share it). If the companion exits with code 2 and a "Refused: ... Pass --force to run another round" message, return that message verbatim. Do not add `--force` yourself; only pass it when the user explicitly asked for another round.
 
 Foreground flow:
 - Run:

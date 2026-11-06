@@ -52,6 +52,10 @@ const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
 const DAYBREAK_ACCESS_PROGRAM = "daybreakBlue";
 const DAYBREAK_DEFAULT_MODEL = "gpt-6-sol";
+const SOL_MODEL_PATTERN = /^gpt-(\d+(?:\.\d+)*)-sol$/;
+const MODEL_LIST_PAGE_LIMIT = 200;
+const MODEL_LIST_MAX_PAGES = 10;
+const QUOTA_READ_TIMEOUT_MS = 5000;
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -688,6 +692,143 @@ async function assertDaybreakModel(client, model) {
   );
 }
 
+async function listAllModels(client) {
+  const models = [];
+  let cursor = null;
+  for (let page = 0; page < MODEL_LIST_MAX_PAGES; page += 1) {
+    const response = await client.request("model/list", { includeHidden: true, limit: MODEL_LIST_PAGE_LIMIT, cursor });
+    if (!Array.isArray(response?.data)) {
+      throw new Error("model/list returned an unexpected shape.");
+    }
+    models.push(...response.data);
+    cursor = response.nextCursor ?? null;
+    if (!cursor) {
+      break;
+    }
+  }
+  return models;
+}
+
+function parseSolVersion(model) {
+  const match = SOL_MODEL_PATTERN.exec(String(model ?? ""));
+  return match ? match[1].split(".").map(Number) : null;
+}
+
+function compareVersions(left, right) {
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const difference = (left[index] ?? 0) - (right[index] ?? 0);
+    if (difference !== 0) {
+      return difference;
+    }
+  }
+  return 0;
+}
+
+export function pickNewestSolModel(models) {
+  let newest = null;
+  for (const candidate of models ?? []) {
+    if (!candidate || candidate.hidden) {
+      continue;
+    }
+    const version = parseSolVersion(candidate.model);
+    if (version && (!newest || compareVersions(version, newest.version) > 0)) {
+      newest = { model: candidate.model, version };
+    }
+  }
+  return newest?.model ?? null;
+}
+
+export async function resolveSolModel(cwd) {
+  let models;
+  try {
+    models = await withAppServer(cwd, (client) => listAllModels(client));
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot resolve \`--model sol\`: model/list failed (${detail}). Pass a concrete model such as gpt-6-sol instead.`);
+  }
+  const model = pickNewestSolModel(models);
+  if (!model) {
+    throw new Error("Cannot resolve `--model sol`: model/list returned no visible gpt-*-sol model. Pass a concrete model instead.");
+  }
+  return model;
+}
+
+function formatQuotaWindowLabel(minutes) {
+  if (!Number.isFinite(minutes) || minutes <= 0) {
+    return "window";
+  }
+  if (minutes % 1440 === 0) {
+    return `${minutes / 1440}d window`;
+  }
+  if (minutes % 60 === 0) {
+    return `${minutes / 60}h window`;
+  }
+  return `${minutes}m window`;
+}
+
+function summarizeQuotaWindow(window) {
+  if (!window || typeof window !== "object" || typeof window.usedPercent !== "number" || !Number.isFinite(window.usedPercent)) {
+    return null;
+  }
+  const usedPercent = Math.min(100, Math.max(0, window.usedPercent));
+  const windowMinutes = typeof window.windowDurationMins === "number" ? window.windowDurationMins : null;
+  const resetsAt =
+    typeof window.resetsAt === "number" && Number.isFinite(window.resetsAt) && window.resetsAt > 0
+      ? new Date(window.resetsAt * 1000).toISOString().replace(/:\d{2}\.\d{3}Z$/, "Z")
+      : null;
+  return {
+    label: formatQuotaWindowLabel(windowMinutes),
+    windowMinutes,
+    usedPercent,
+    remainingPercent: Math.round(100 - usedPercent),
+    resetsAt
+  };
+}
+
+export function summarizeRateLimits(response) {
+  const snapshot = response?.rateLimits;
+  if (!snapshot || typeof snapshot !== "object") {
+    return null;
+  }
+  const windows = [snapshot.primary, snapshot.secondary].map(summarizeQuotaWindow).filter(Boolean);
+  if (windows.length === 0) {
+    return null;
+  }
+  const line = `Codex quota: ${windows
+    .map((window) => `${window.remainingPercent}% left in ${window.label}${window.resetsAt ? ` (resets ${window.resetsAt})` : ""}`)
+    .join("; ")}`;
+  return { line, windows };
+}
+
+// Best effort only: a quota read must never block or fail a review.
+async function readQuota(client) {
+  let timer = null;
+  try {
+    const request = client.request("account/rateLimits/read", { excludeResetCreditDetails: true });
+    request.catch(() => {});
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), QUOTA_READ_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    return summarizeRateLimits(await Promise.race([request, timeout]));
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function reportQuota(client, options) {
+  if (!options.reportQuota) {
+    return null;
+  }
+  const quota = await readQuota(client);
+  if (quota) {
+    emitProgress(options.onProgress, quota.line, "starting");
+  }
+  return quota;
+}
+
 function resolveCodexHome() {
   return path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"));
 }
@@ -1044,6 +1185,7 @@ export async function runAppServerReview(cwd, options = {}) {
   }
 
   return withAppServer(cwd, async (client) => {
+    const quota = await reportQuota(client, options);
     emitProgress(options.onProgress, "Starting Codex review thread.", "starting");
     const thread = await startThread(client, cwd, {
       model: options.model,
@@ -1088,7 +1230,8 @@ export async function runAppServerReview(cwd, options = {}) {
       reasoningSummary: turnState.reasoningSummary,
       turn: turnState.finalTurn,
       error: turnState.error,
-      stderr: cleanCodexStderr(client.stderr)
+      stderr: cleanCodexStderr(client.stderr),
+      quota
     };
   });
 }
@@ -1146,6 +1289,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     if (daybreak) {
       await assertDaybreakModel(client, model);
     }
+    const quota = await reportQuota(client, options);
 
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
@@ -1201,7 +1345,8 @@ export async function runAppServerTurn(cwd, options = {}) {
       stderr: cleanCodexStderr(client.stderr),
       fileChanges: turnState.fileChanges,
       touchedFiles: collectTouchedFiles(turnState.fileChanges),
-      commandExecutions: turnState.commandExecutions
+      commandExecutions: turnState.commandExecutions,
+      quota
     };
   });
 }
@@ -1263,4 +1408,4 @@ export function readOutputSchema(schemaPath) {
   return readJsonFile(schemaPath);
 }
 
-export { DEFAULT_CONTINUE_PROMPT, TASK_THREAD_PREFIX };
+export { DAYBREAK_ACCESS_PROGRAM, DAYBREAK_DEFAULT_MODEL, DEFAULT_CONTINUE_PROMPT, TASK_THREAD_PREFIX };

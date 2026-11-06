@@ -190,6 +190,17 @@ export function resolveReviewTarget(cwd, options = {}) {
   };
 }
 
+// Identifies "the same change" for the one-round review guard: fix-up edits on the same HEAD
+// (working tree) or new commits on the same branch since the same merge-base count as one change.
+export function resolveReviewChangeKey(cwd, target) {
+  if (target.mode === "branch") {
+    const mergeBase = gitChecked(cwd, ["merge-base", "HEAD", target.baseRef]).stdout.trim();
+    return `branch:${getCurrentBranch(cwd)}@${mergeBase}`;
+  }
+  const head = git(cwd, ["rev-parse", "--verify", "--quiet", "HEAD"]);
+  return `working-tree:${head.status === 0 ? head.stdout.trim() : "unborn"}`;
+}
+
 function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }

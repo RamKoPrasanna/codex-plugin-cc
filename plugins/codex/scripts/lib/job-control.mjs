@@ -28,8 +28,8 @@ function getJobTypeLabel(job) {
   if (typeof job.kindLabel === "string" && job.kindLabel) {
     return job.kindLabel;
   }
-  if (job.kind === "adversarial-review") {
-    return "adversarial-review";
+  if (job.kind === "adversarial-review" || job.kind === "security-review") {
+    return job.kind;
   }
   if (job.jobClass === "review") {
     return "review";

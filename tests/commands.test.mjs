@@ -49,7 +49,8 @@ test("adversarial review command uses AskUserQuestion and background Bash while 
   assert.match(source, /```bash/);
   assert.match(source, /```typescript/);
   assert.match(source, /adversarial-review "\$ARGUMENTS"/);
-  assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model>\] \[--daybreak\] \[focus \.\.\.\]/);
+  assert.match(source, /\[--scope auto\|working-tree\|branch\] \[--model <model\|sol>\] \[--daybreak\] \[--force\] \[focus \.\.\.\]/);
+  assert.match(source, /Do not add `--force` yourself/);
   assert.match(source, /run_in_background:\s*true/);
   assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" adversarial-review "\$ARGUMENTS"`/);
   assert.match(source, /description:\s*"Codex adversarial review"/);
@@ -70,6 +71,21 @@ test("adversarial review command uses AskUserQuestion and background Bash while 
   assert.match(source, /can still take extra focus text after the flags/i);
 });
 
+test("security review command is model-invocable, always Daybreak, and guards review rounds", () => {
+  const source = read("commands/security-review.md");
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  assert.doesNotMatch(source, /disable-model-invocation/);
+  assert.match(source, /argument-hint: '\[--wait\|--background\] \[--base <ref>\] \[--scope auto\|working-tree\|branch\] \[--model <model>\] \[--force\] \[--json\] \[focus \.\.\.\]'/);
+  assert.match(source, /command:\s*`node "\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/codex-companion\.mjs" security-review "\$ARGUMENTS"`/);
+  assert.match(source, /run_in_background:\s*true/);
+  assert.match(source, /Daybreak is always on/);
+  assert.match(source, /Do not add `--force` yourself/);
+  assert.match(source, /Return the command stdout verbatim, exactly as-is/i);
+  assert.match(read("commands/review.md"), /\[--force\]'/);
+  assert.match(readme, /### `\/codex:security-review`/);
+  assert.match(readme, /#### One review round per change/);
+});
+
 test("continue is not exposed as a user-facing command", () => {
   const commandFiles = fs.readdirSync(path.join(PLUGIN_ROOT, "commands")).sort();
   assert.deepEqual(commandFiles, [
@@ -78,6 +94,7 @@ test("continue is not exposed as a user-facing command", () => {
     "rescue.md",
     "result.md",
     "review.md",
+    "security-review.md",
     "setup.md",
     "status.md",
     "transfer.md"
@@ -131,7 +148,9 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /If the user did not explicitly choose `--background` or `--wait` and the task looks complicated, open-ended, multi-step, or likely to keep Codex running for a long time, prefer background execution/i);
   assert.match(agent, /Use exactly one `Bash` call/i);
   assert.match(agent, /Do not inspect the repository, read files, grep, monitor progress, poll status, fetch results, cancel jobs, summarize output, or do any follow-up work of your own/i);
-  assert.match(agent, /Do not call `review`, `adversarial-review`, `status`, `result`, or `cancel`/i);
+  assert.match(agent, /Do not call `review`, `adversarial-review`, `security-review`, `status`, `result`, or `cancel`/i);
+  assert.match(agent, /Never add `--force`/);
+  assert.match(agent, /--model sol/);
   assert.match(agent, /Leave `--effort` unset unless the user explicitly requests a specific reasoning effort/i);
   assert.match(agent, /Leave model unset by default/i);
   assert.match(agent, /If the user asks for `luna` \(or the legacy `spark`\), map that to `--model gpt-6-luna`/i);
@@ -142,7 +161,9 @@ test("rescue command absorbs continue semantics", () => {
   assert.match(agent, /only to tighten the user's request into a better Codex prompt/i);
   assert.match(agent, /Do not use that skill to inspect the repository, reason through the problem yourself, draft a solution, or do any independent work/i);
   assert.match(runtimeSkill, /only job is to invoke `task` once and return that stdout unchanged/i);
-  assert.match(runtimeSkill, /Do not call `setup`, `review`, `adversarial-review`, `status`, `result`, or `cancel`/i);
+  assert.match(runtimeSkill, /Do not call `setup`, `review`, `adversarial-review`, `security-review`, `status`, `result`, or `cancel`/i);
+  assert.match(runtimeSkill, /Do not pass `--force` unless the user explicitly asked for another round/);
+  assert.match(runtimeSkill, /--model sol/);
   assert.match(runtimeSkill, /use the `codex-prompting` skill to rewrite the user's request into a tighter Codex prompt/i);
   assert.match(runtimeSkill, /That prompt drafting is the only Claude-side work allowed/i);
   assert.match(runtimeSkill, /Leave `--effort` unset unless the user explicitly requests a specific effort/i);
