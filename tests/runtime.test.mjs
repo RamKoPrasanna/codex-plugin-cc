@@ -780,8 +780,98 @@ test("task forwards model selection and reasoning effort to app-server turn/star
 
   assert.equal(result.status, 0, result.stderr);
   const fakeState = JSON.parse(fs.readFileSync(statePath, "utf8"));
-  assert.equal(fakeState.lastTurnStart.model, "gpt-5.3-codex-spark");
+  assert.equal(fakeState.lastTurnStart.model, "gpt-6-luna");
   assert.equal(fakeState.lastTurnStart.effort, "low");
+});
+
+function setupDaybreakRepo() {
+  const repo = makeTempDir();
+  const binDir = makeTempDir();
+  const statePath = path.join(binDir, "fake-codex-state.json");
+  installFakeCodex(binDir);
+  initGitRepo(repo);
+  fs.mkdirSync(path.join(repo, "src"));
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0];\n");
+  run("git", ["add", "src/app.js"], { cwd: repo });
+  run("git", ["commit", "-m", "init"], { cwd: repo });
+  fs.writeFileSync(path.join(repo, "src", "app.js"), "export const value = items[0].id;\n");
+  const readState = () => JSON.parse(fs.readFileSync(statePath, "utf8"));
+  return { repo, binDir, readState };
+}
+
+test("review --daybreak is rejected because review/start cannot carry an access program", () => {
+  const { repo, binDir } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "review", "--daybreak"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Native review cannot run under Daybreak/);
+});
+
+test("adversarial review --daybreak requests Daybreak Blue on turn/start over an experimental connection", () => {
+  const { repo, binDir, readState } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "adversarial-review", "--daybreak", "check auth"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const state = readState();
+  assert.equal(state.lastTurnStart.cyberAccessProgram, "daybreakBlue");
+  assert.equal(state.lastTurnStart.model, "gpt-6-sol");
+  assert.equal(state.lastThreadStart.model, "gpt-6-sol");
+  assert.equal(state.capabilities.experimentalApi, true);
+});
+
+test("adversarial review without --daybreak sends no access program", () => {
+  const { repo, binDir, readState } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "adversarial-review"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(readState().lastTurnStart.cyberAccessProgram, null);
+  assert.equal(readState().lastTurnStart.model, null);
+});
+
+test("task --daybreak requests Daybreak Blue on start and on --resume-last", () => {
+  const { repo, binDir, readState } = setupDaybreakRepo();
+
+  const first = run("node", [SCRIPT, "task", "--daybreak", "initial task"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(first.status, 0, first.stderr);
+
+  const resumed = run("node", [SCRIPT, "task", "--resume-last", "--daybreak", "follow up"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  assert.deepEqual(
+    readState().turnStarts.map((turn) => turn.cyberAccessProgram),
+    ["daybreakBlue", "daybreakBlue"]
+  );
+  assert.equal(readState().lastThreadResume.model, "gpt-6-sol");
+});
+
+test("task --daybreak on a model without Daybreak fails before starting a thread", () => {
+  const { repo, binDir, readState } = setupDaybreakRepo();
+
+  const result = run("node", [SCRIPT, "task", "--daybreak", "--model", "gpt-6.1-sol", "audit"], {
+    cwd: repo,
+    env: buildEnv(binDir)
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Daybreak is not available for model gpt-6\.1-sol\. Models that support it: gpt-6-sol\./);
+  assert.equal(readState().lastThreadStart, undefined);
 });
 
 test("task logs reasoning summaries and assistant messages to the job log", () => {

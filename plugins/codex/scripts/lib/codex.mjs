@@ -40,7 +40,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { readJsonFile } from "./fs.mjs";
-import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient } from "./app-server.mjs";
+import { BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV, CodexAppServerClient, DEFAULT_CAPABILITIES } from "./app-server.mjs";
 import { loadBrokerSession } from "./broker-lifecycle.mjs";
 import { binaryAvailable } from "./process.mjs";
 
@@ -50,6 +50,8 @@ const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current thread state. Pick the next highest-value step and follow through until the task is resolved.";
 const EXTERNAL_AGENT_IMPORT_COMPLETED = "externalAgentConfig/import/completed";
 const EXTERNAL_AGENT_IMPORT_TIMEOUT_MS = 2 * 60 * 1000;
+const DAYBREAK_ACCESS_PROGRAM = "daybreakBlue";
+const DAYBREAK_DEFAULT_MODEL = "gpt-6-sol";
 
 function cleanCodexStderr(stderr) {
   return stderr
@@ -650,6 +652,42 @@ async function withDirectAppServer(cwd, fn) {
   }
 }
 
+// turn/start.cyberAccessProgram is experimental and the broker answers `initialize` itself with
+// default capabilities, so Daybreak turns always get their own app-server.
+async function withDaybreakAppServer(cwd, fn) {
+  const client = await CodexAppServerClient.connect(cwd, {
+    disableBroker: true,
+    capabilities: { ...DEFAULT_CAPABILITIES, experimentalApi: true }
+  });
+  try {
+    return await fn(client);
+  } finally {
+    await client.close();
+  }
+}
+
+// The backend rejects Daybreak on unsupported models only after five reconnect attempts,
+// so check the catalog first and fail fast with the models that do support it.
+async function assertDaybreakModel(client, model) {
+  let models;
+  try {
+    models = (await client.request("model/list", { includeHidden: true, limit: 200 }))?.data ?? null;
+  } catch {
+    return;
+  }
+  const entry = models?.find((candidate) => candidate.model === model || candidate.id === model);
+  const programs = entry?.availableAccessPrograms?.cyber;
+  if (!entry || !Array.isArray(programs) || programs.includes(DAYBREAK_ACCESS_PROGRAM)) {
+    return;
+  }
+  const supported = models
+    .filter((candidate) => !candidate.hidden && candidate.availableAccessPrograms?.cyber?.includes(DAYBREAK_ACCESS_PROGRAM))
+    .map((candidate) => candidate.model);
+  throw new Error(
+    `Daybreak is not available for model ${model}.${supported.length ? ` Models that support it: ${supported.join(", ")}.` : ""}`
+  );
+}
+
 function resolveCodexHome() {
   return path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"));
 }
@@ -1098,13 +1136,21 @@ export async function runAppServerTurn(cwd, options = {}) {
     throw new Error("Codex CLI is not installed or is missing required runtime support. Install it with `npm install -g @openai/codex`, then rerun `/codex:setup`.");
   }
 
-  return withAppServer(cwd, async (client) => {
+  const daybreak = Boolean(options.daybreak);
+  const model = options.model ?? (daybreak ? DAYBREAK_DEFAULT_MODEL : null);
+  const connect = daybreak ? withDaybreakAppServer : withAppServer;
+
+  return connect(cwd, async (client) => {
     let threadId;
+
+    if (daybreak) {
+      await assertDaybreakModel(client, model);
+    }
 
     if (options.resumeThreadId) {
       emitProgress(options.onProgress, `Resuming thread ${options.resumeThreadId}.`, "starting");
       const response = await resumeThread(client, options.resumeThreadId, cwd, {
-        model: options.model,
+        model,
         sandbox: options.sandbox,
         ephemeral: false
       });
@@ -1112,7 +1158,7 @@ export async function runAppServerTurn(cwd, options = {}) {
     } else {
       emitProgress(options.onProgress, "Starting Codex task thread.", "starting");
       const response = await startThread(client, cwd, {
-        model: options.model,
+        model,
         sandbox: options.sandbox,
         ephemeral: options.persistThread ? false : true,
         threadName: options.persistThread ? options.threadName : options.threadName ?? null
@@ -1136,9 +1182,10 @@ export async function runAppServerTurn(cwd, options = {}) {
         client.request("turn/start", {
           threadId,
           input: buildTurnInput(prompt),
-          model: options.model ?? null,
+          model,
           effort: options.effort ?? null,
-          outputSchema: options.outputSchema ?? null
+          outputSchema: options.outputSchema ?? null,
+          ...(daybreak ? { cyberAccessProgram: DAYBREAK_ACCESS_PROGRAM } : {})
         }),
       { onProgress: options.onProgress }
     );

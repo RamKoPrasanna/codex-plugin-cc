@@ -1,7 +1,7 @@
 # Codex Prompt Recipes
 
-Use these as starting templates for Codex task prompts or other Codex/GPT-5.4 prompt construction.
-Copy the smallest recipe that fits the task, then trim anything you do not need.
+Use these as starting templates for Codex task prompts.
+Copy the smallest recipe that fits the task, then trim anything you do not need. Each recipe is a sketch: delete blocks the task does not call for, and add a one-line definition of done to `<task>`.
 In `codex:codex-rescue`, run diagnosis and fix-oriented recipes in write mode by default unless the user explicitly asked for read-only behavior.
 
 ## Diagnosis
@@ -21,12 +21,8 @@ Return a compact diagnosis with:
 
 <default_follow_through_policy>
 Keep going until you have enough evidence to identify the root cause confidently.
-Only stop to ask questions when a missing detail changes correctness materially.
+Only stop to ask when a missing detail changes correctness materially.
 </default_follow_through_policy>
-
-<verification_loop>
-Before finalizing, verify that the proposed root cause matches the observed evidence.
-</verification_loop>
 
 <missing_context_gating>
 Do not guess missing repository facts.
@@ -60,7 +56,7 @@ Do not stop after identifying the issue without applying the fix.
 </completeness_contract>
 
 <verification_loop>
-Before finalizing, verify that the fix matches the task requirements and that the changed code is coherent.
+Run a targeted check that fits the size of the change; do not run the full suite for a small fix.
 </verification_loop>
 
 <action_safety>
@@ -91,11 +87,8 @@ If a point is an inference, label it clearly.
 
 <dig_deeper_nudge>
 Check for second-order failures, empty-state handling, retries, stale state, and rollback paths before finalizing.
+Report only findings that are material and actionable.
 </dig_deeper_nudge>
-
-<verification_loop>
-Before finalizing, verify that each finding is material and actionable.
-</verification_loop>
 ```
 
 ## Research Or Recommendation
@@ -128,7 +121,7 @@ Prefer primary sources.
 
 ```xml
 <task>
-Diagnose why this existing prompt is underperforming and propose the smallest high-leverage changes to improve it for Codex or GPT-5.4.
+Diagnose why this existing prompt is underperforming and propose the smallest high-leverage changes to improve it for current Codex models.
 </task>
 
 <structured_output_contract>
@@ -144,7 +137,7 @@ Base your diagnosis on the prompt text and the failure examples provided.
 Do not invent failure modes that are not supported by the examples.
 </grounding_rules>
 
-<verification_loop>
-Before finalizing, make sure the revised prompt resolves the cited failure modes without adding contradictory instructions.
-</verification_loop>
+<completeness_contract>
+The revised prompt must resolve the cited failure modes without adding contradictory instructions, and should be shorter than or about as long as the original.
+</completeness_contract>
 ```

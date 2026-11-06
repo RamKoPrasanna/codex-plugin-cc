@@ -2,6 +2,13 @@ name: Pull Request CI
 
 on:
   pull_request:
+  push:
+  workflow_dispatch:
+
+# A push to a PR branch fires both push and pull_request; keep only the newest run per branch.
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 
 permissions:
   contents: read

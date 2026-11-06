@@ -294,6 +294,19 @@ rl.on("line", (line) => {
       case "initialized":
         break;
 
+      case "model/list":
+        send({
+          id: message.id,
+          result: {
+            data: [
+              { id: "gpt-6.1-sol", model: "gpt-6.1-sol", hidden: false, availableAccessPrograms: { cyber: ["standard"] } },
+              { id: "gpt-6-sol", model: "gpt-6-sol", hidden: false, availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] } }
+            ],
+            nextCursor: null
+          }
+        });
+        break;
+
       case "account/read":
         send({ id: message.id, result: buildAccountReadResult() });
         break;
@@ -312,6 +325,7 @@ rl.on("line", (line) => {
         if (requiresExperimental("persistExtendedHistory", message, state) || requiresExperimental("persistFullHistory", message, state)) {
           throw new Error("thread/start.persistFullHistory requires experimentalApi capability");
         }
+        state.lastThreadStart = { model: message.params.model ?? null };
         const thread = nextThread(state, message.params.cwd, message.params.ephemeral);
         send({ id: message.id, result: { thread: buildThread(thread), model: message.params.model || "gpt-5.4", modelProvider: "openai", serviceTier: null, cwd: thread.cwd, approvalPolicy: "never", sandbox: { type: "readOnly", access: { type: "fullAccess" }, networkAccess: false }, reasoningEffort: null } });
         send({ method: "thread/started", params: { thread: { id: thread.id } } });
@@ -344,6 +358,7 @@ rl.on("line", (line) => {
         if (requiresExperimental("persistExtendedHistory", message, state) || requiresExperimental("persistFullHistory", message, state)) {
           throw new Error("thread/resume.persistFullHistory requires experimentalApi capability");
         }
+        state.lastThreadResume = { model: message.params.model ?? null };
         const thread = ensureThread(state, message.params.threadId);
         thread.updatedAt = now();
         saveState(state);
@@ -437,6 +452,9 @@ rl.on("line", (line) => {
       }
 
 	      case "turn/start": {
+	        if (requiresExperimental("cyberAccessProgram", message, state)) {
+	          throw new Error("turn/start.cyberAccessProgram requires experimentalApi capability");
+	        }
 	        const thread = ensureThread(state, message.params.threadId);
 	        const prompt = (message.params.input || [])
           .filter((item) => item.type === "text")
@@ -449,8 +467,10 @@ rl.on("line", (line) => {
 	          turnId,
 	          model: message.params.model ?? null,
 	          effort: message.params.effort ?? null,
+	          cyberAccessProgram: message.params.cyberAccessProgram ?? null,
 	          prompt
 	        };
+	        state.turnStarts = [...(state.turnStarts || []), state.lastTurnStart];
 	        saveState(state);
 	        send({ id: message.id, result: { turn: buildTurn(turnId) } });
 
