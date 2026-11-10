@@ -318,7 +318,7 @@ This way you can review the Codex work or continue the work there.
 
 ## Fork Upstream Sync
 
-`.github/workflows/upstream-sync.yml` runs daily at 14:17 UTC and on demand. When `openai/codex-plugin-cc` main has commits the fork's main lacks, it merges them into an `upstream-sync` branch (a merge commit, so fork changes stay), opens or updates a pull request into main, and dispatches `pull-request-ci.yml` on that branch. A conflicting merge, or upstream changes to workflow files (which `GITHUB_TOKEN` cannot push), opens or updates the issue "Upstream sync: manual merge needed" instead. The job never runs upstream code; CI does. It needs **Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and approve pull requests** enabled.
+`.github/workflows/upstream-sync.yml` runs daily at 14:17 UTC and on demand. When `openai/codex-plugin-cc` main has commits the fork's main lacks, it merges them into an `upstream-sync` branch (a merge commit, so fork changes stay), opens or updates a pull request into main, and dispatches `pull-request-ci.yml` on that branch. A conflicting merge, or upstream changes to workflow files (which `GITHUB_TOKEN` cannot push), opens or updates the issue "Upstream sync: manual merge needed" instead. The job never runs upstream code; CI does. Merge that pull request with **Create a merge commit**: a squash or rebase leaves upstream's commits out of main's history, so the next run still sees the fork as behind and reopens the pull request. It needs **Settings > Actions > General > Workflow permissions > Allow GitHub Actions to create and approve pull requests** enabled.
 
 ## FAQ
 
