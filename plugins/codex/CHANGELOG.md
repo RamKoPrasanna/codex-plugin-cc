@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.2.2
+
+- Status table cells now escape backslashes as well as pipes, so a job summary containing `\` can no longer break the active-jobs table (CodeQL `js/incomplete-sanitization`).
+
 ## 1.2.1
 
 - Fork upstream sync workflow: a daily job opens or updates an `upstream-sync` pull request merging `openai/codex-plugin-cc` main into the fork, dispatches CI on it, and files an issue instead when the merge conflicts or touches workflow files.

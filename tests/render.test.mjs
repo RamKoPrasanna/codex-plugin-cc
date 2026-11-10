@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { renderReviewResult, renderStoredJobResult } from "../plugins/codex/scripts/lib/render.mjs";
+import { renderReviewResult, renderStatusReport, renderStoredJobResult } from "../plugins/codex/scripts/lib/render.mjs";
 
 test("renderReviewResult degrades gracefully when JSON is missing required review fields", () => {
   const output = renderReviewResult(
@@ -56,4 +56,28 @@ test("renderStoredJobResult prefers rendered output for structured review jobs",
   assert.doesNotMatch(output, /^\{/);
   assert.match(output, /Codex session ID: thr_123/);
   assert.match(output, /Resume in Codex: codex resume thr_123/);
+});
+
+test("renderStatusReport escapes backslashes and pipes in active job table cells", () => {
+  const output = renderStatusReport({
+    sessionRuntime: { label: "direct" },
+    config: { stopReviewGate: false },
+    running: [
+      {
+        id: "task-1",
+        kindLabel: "rescue",
+        status: "running",
+        phase: "working",
+        elapsed: "5s",
+        threadId: "thr_1",
+        summary: "fix C:\\tmp\\a|b and a trailing \\"
+      }
+    ],
+    latestFinished: null,
+    recent: []
+  });
+
+  const row = output.split("\n").find((line) => line.startsWith("| task-1 "));
+  assert.ok(row);
+  assert.ok(row.includes("| fix C:\\\\tmp\\\\a\\|b and a trailing \\\\ |"));
 });
