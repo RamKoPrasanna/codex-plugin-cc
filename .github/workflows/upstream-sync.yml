@@ -176,6 +176,8 @@ jobs:
             echo "This fork carries its own changes: the \`ram-codex\` marketplace name, the fork version, Daybreak support, and security-review. Keep them when resolving or reviewing."
             echo
             echo "CI runs via \`workflow_dispatch\` on \`$SYNC_BRANCH\`, since pull requests opened with \`GITHUB_TOKEN\` do not trigger \`pull_request\` workflows. The branch is regenerated from fork main when upstream or fork main moves; make fix-ups on another branch."
+            echo
+            echo "Merge with **Create a merge commit**. A squash or rebase leaves upstream's commits out of main's history, so the next run still sees the fork as behind and reopens this pull request."
           } > "$body"
 
           # --head matches the branch name from any fork, so only a PR from this repository counts.
